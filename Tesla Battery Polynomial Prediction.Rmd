@@ -1,0 +1,176 @@
+---
+title: "Tesla battery survey polynomial prediction"
+output: pdf_document
+date: "2024-03-31"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+From https://electrek.co/2018/04/14/tesla-battery-degradation-data/
+
+``Battery degradation is one of the biggest concerns for electric car owners and potential buyers, but data from Tesla battery packs have been very reassuring so far. A group of Tesla owners on the Dutch-Belgium Tesla Forum are gathering data from over 350 Tesla vehicles across the world and frequently updating it in a public Google file.''
+
+- Here we will use the Tesla battery survey to explore the nature of the predictive accuracy of various polynomials, The file `tesla_battery_Survey.csv` contains battery and mileages information on variety on Tesla. 
+
+We now generate the scatter plot of the data (with shading) and overlay the fitted polynomials with degrees 3 and 20 to the data.
+
+```{r, echo = FALSE}
+getmuhat <- function(sampleXY, complexity = 1) {
+  formula <- paste0("y ~ ",
+                    if (complexity==0) "1"
+                    else {
+                      if (complexity < 3 ) {
+                        paste0("poly(x, ", complexity, ", raw = FALSE)") 
+                        ## due to Numerical overflow 
+                      } else {   
+                        ## if complexity >= 20 use a spline.
+                        paste0("bs(x, ", complexity, ")") 
+                      }
+                    }  
+  )
+  
+  fit <- lm(as.formula(formula), data = sampleXY)
+  tx = sampleXY$x
+  ty = fit$fitted.values
+  
+  range.X = range(tx)
+  val.rY  = c( mean(ty[tx == range.X[1]]), 
+               mean(ty[tx == range.X[2]]) )
+  
+  ## From this we construct the predictor function
+  muhat <- function(x){
+    if ("x" %in% names(x)) {
+      ## x is a dataframe containing the variate named
+      ## by xvarname
+      newdata <- x
+    } else 
+      ## x is a vector of values that needs to be a data.frame
+    { newdata <- data.frame(x = x) }
+    ## The prediction
+    ## 
+    suppressWarnings({ 
+      ypred = predict(fit, newdata = newdata, silent = TRUE)    })
+    #val = predict(fit, newdata = newdata)
+    ypred[newdata$x < range.X[1]] = val.rY[1]
+    ypred[newdata$x > range.X[2]] = val.rY[2]
+    ypred
+  }
+  ## muhat is the function that we need to calculate values 
+  ## at any x, so we return this function from getmuhat
+  muhat
+}
+
+``` 
+
+```{r}
+library(splines)
+tesla_data = read.csv("tesla_battery_Survey.csv")
+tesla_data$x = tesla_data$Your.mileage.km
+tesla_data$y = tesla_data$Remaining.battery.capacity
+
+
+muhat3  <- getmuhat(tesla_data, 3)
+muhat12 <- getmuhat(tesla_data, 20)
+
+xlim <- extendrange(tesla_data$x)
+
+plot(tesla_data[,c('Your.mileage.km', 'Remaining.battery.capacity')],
+     pch=19, col= adjustcolor("black", 0.5))
+curve(muhat3, from = xlim[1], to = xlim[2], 
+      add = TRUE, col="red", lwd=2)
+curve(muhat12, from = xlim[1], to = xlim[2], 
+      add = TRUE, col="steelblue", lwd=2)
+title(main="red=degree 3 , blue=degree 20")
+
+```
+
+
+Since we only have 350 Tesla Vehicles as our population, which is quite small. We will generate $m=25$ samples of size $n=600$. Fit polynomials of degree 3 and 20 to every sample.
+
+```{r, echo=FALSE}
+getSampleComp <- function(pop, size, replace=FALSE) {
+  N <- dim(pop)[1]
+  samp <- rep(FALSE, N)
+  samp[sample(1:N, size, replace = replace)] <- TRUE
+  samp
+}
+
+
+### This function will return a data frame containing
+### only two variates, an x and a y
+getXYSample <- function(xvarname, yvarname, samp, pop) {
+  sampData <- pop[samp, c(xvarname, yvarname)]
+  names(sampData) <- c("x", "y")
+  sampData
+}
+
+```
+
+```{r}
+m=25
+n= 600
+samps    <- lapply(1:m, FUN= function(i){getSampleComp(tesla_data, n)})
+Ssamples <- lapply(samps, FUN= function(Si){getXYSample("x", "y", Si, tesla_data)})
+Tsamples <- lapply(samps, FUN= function(Si){getXYSample("x", "y", !Si, tesla_data)})
+
+muhats3 <- lapply(Ssamples, getmuhat, complexity = 3)
+muhats20 <- lapply(Ssamples, getmuhat, complexity = 20)
+
+```
+
+We now plot all the fitted polynomials with degree 3 and 20 on two different figures. Overlay the two fitted polynomials of degree 3 and 20 based on the whole population.
+
+
+```{r}
+par(mfrow=c(1,2))
+
+xvals <- seq(xlim[1], xlim[2], length.out = 200)
+plot(tesla_data[,c('Your.mileage.km', 'Remaining.battery.capacity')],
+     pch=19, type='n',
+     xlab="Your.mileage.km", ylab="Remaining.battery.capacity",
+     main= " muhats (degree = 3) & mubar")
+
+
+for (i in 1:m) {
+  curveFn <- muhats3[[i]]
+  curve(curveFn, from = xlim[1], to = xlim[2], add=TRUE, col=adjustcolor("blue", 0.2), lwd=3, lty=(1))
+}
+
+curve(muhat3,  from = xlim[1], to = xlim[2],
+      add=TRUE, col="firebrick", lwd=3)
+
+points(tesla_data[,c('Your.mileage.km', 'Remaining.battery.capacity')],
+     pch=19, col= adjustcolor("black", 0.5))
+
+
+plot(tesla_data[,c('Your.mileage.km', 'Remaining.battery.capacity')],
+     pch=19, type='n',
+     xlab="x", ylab="predictions",
+     main= " muhats (degree = 20) & mubar")
+
+for (i in 1:m) {
+  curveFn <- muhats20[[i]]
+  curve(curveFn, xlim[1], xlim[2], add=TRUE, col=adjustcolor("blue", 0.2), lwd=3, lty=1)
+}
+
+curve(muhat12, xlim[1], xlim[2], add=TRUE, col="firebrick", lwd=3)
+
+points(tesla_data[,c('Your.mileage.km', 'Remaining.battery.capacity')],
+     pch=19, col= adjustcolor("black", 0.5))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
